@@ -12,11 +12,9 @@ bvd_transaction = bvd_transaction.drop("bankingVerificationList", "transaction",
 
 # Replace empty strings with None (equivalent to null in Spark)
 bvd_transaction = bvd_transaction.na.replace('', None)
-# Convert to Pandas DataFrame
-pdf = bvd_transaction.toPandas()
 # Replace None (NaN) values with the string "NULL"
-pdf = pdf.replace({pd.NA: "NULL", None: "NULL"})
+bvd_transaction = bvd_transaction.toPandas().replace({pd.NA: "NULL", None: "NULL"})
+bvd_transaction.to_csv("s3://datawarehouse-bilight/Staging/LOS3.0/dmDetails/Yearly/testing/bvd_transaction.txt",index=False, encoding="utf-8-sig")
 
-pdf.to_csv("bvd_transaction.txt", index=False)
 bvd_transaction.show()
 bvd_transaction.printSchema()
