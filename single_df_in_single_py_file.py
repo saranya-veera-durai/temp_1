@@ -2,52 +2,56 @@
 #################################################################### SCHEMA_INFO ##############################################################################################
 
 
-from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, ArrayType
-import pandas as pd
+# from pyspark.sql import SparkSession
+# from pyspark.sql.types import StructType, ArrayType
+# import pandas as pd
 
-# Create a Spark session
-spark = SparkSession.builder \
-    .appName("JSON Schema Extraction and Categorization") \
-    .getOrCreate()
+# # Create a Spark session
+# spark = SparkSession.builder \
+#     .appName("JSON Schema Extraction and Categorization") \
+#     .getOrCreate()
 
-# Path to the JSON file
-json_path = "insuranceData_20240909000000.json"
+# # Path to the JSON file
+# json_path = "insuranceData_20240909000000.json"
 
-# Read the JSON file into a DataFrame
-df = spark.read.option("multiline", True).json(json_path)
+# # Read the JSON file into a DataFrame
+# df = spark.read.option("multiline", True).json(json_path)
 
-# Recursive function to flatten the schema
-def flatten_schema(schema, prefix=None):
-    fields = []
-    for field in schema.fields:
-        field_name = field.name if prefix is None else f"{prefix}.{field.name}"
-        field_type = "struct" if isinstance(field.dataType, StructType) else \
-                     f"array<struct>" if isinstance(field.dataType, ArrayType) and isinstance(field.dataType.elementType, StructType) else \
-                     f"array<{field.dataType.elementType.simpleString()}>" if isinstance(field.dataType, ArrayType) else \
-                     field.dataType.simpleString()
-        fields.append((field_name, field_type))
-        if isinstance(field.dataType, StructType):
-            fields.extend(flatten_schema(field.dataType, field_name))
-        elif isinstance(field.dataType, ArrayType) and isinstance(field.dataType.elementType, StructType):
-            fields.extend(flatten_schema(field.dataType.elementType, field_name))
-    return fields
+# # Recursive function to flatten the schema
+# def flatten_schema(schema, prefix=None):
+#     fields = []
+#     for field in schema.fields:
+#         field_name = field.name if prefix is None else f"{prefix}.{field.name}"
+#         field_type = "struct" if isinstance(field.dataType, StructType) else \
+#                      f"array<struct>" if isinstance(field.dataType, ArrayType) and isinstance(field.dataType.elementType, StructType) else \
+#                      f"array<{field.dataType.elementType.simpleString()}>" if isinstance(field.dataType, ArrayType) else \
+#                      field.dataType.simpleString()
+#         fields.append((field_name, field_type))
+#         if isinstance(field.dataType, StructType):
+#             fields.extend(flatten_schema(field.dataType, field_name))
+#         elif isinstance(field.dataType, ArrayType) and isinstance(field.dataType.elementType, StructType):
+#             fields.extend(flatten_schema(field.dataType.elementType, field_name))
+#     return fields
 
-# Extract and flatten the schema
-flattened_schema = flatten_schema(df.schema)
+# # Extract and flatten the schema
+# flattened_schema = flatten_schema(df.schema)
 
-# Convert to DataFrame
-schema_df = pd.DataFrame(flattened_schema, columns=["Field", "Data Type"])
+# # Convert to DataFrame
+# schema_df = pd.DataFrame(flattened_schema, columns=["Field", "Data Type"])
 
-# Reorder columns
-schema_df = schema_df[["Field", "Data Type"]]
+# # Determine hierarchy
+# def find_hierarchy(column):
+#     return '.'.join(column.split('.')[:-1]) if '.' in column else 'root'
 
-# Write the DataFrame to a CSV file
-schema_df.to_csv("schema_info.csv", index=False)
+# schema_df["Hierarchy"] = schema_df["Field"].apply(find_hierarchy)
 
-print("CSV file 'schema_info.csv' has been created successfully.")
+# # Reorder columns
+# schema_df = schema_df[["Field", "Hierarchy", "Data Type"]]
 
+# # Write the DataFrame to a CSV file
+# schema_df.to_csv("schema_info.csv", index=False)
 
+# print("CSV file 'schema_info.csv' has been created successfully.")
 
 
 
@@ -200,11 +204,12 @@ def generate_pyspark_code(fields, df_name):
                 current_alias = last_level
             level_stack.append(last_level)
 
+
+    # Call expand_structs to dynamically expand any struct fields present
+    code_str += f'df_{df_name} = expand_structs(df_{df_name})\n'
     # Drop the exploded columns and aliases in a single line
     code_str += f'df_{df_name} = drop_child_arrays(df_{df_name})\n'
     
-    # Call expand_structs to dynamically expand any struct fields present
-    code_str += f'df_{df_name} = expand_structs(df_{df_name})\n'
     code_str += f'df_{df_name}.printSchema()\n'
     code_str += f'df_{df_name}.show()'
     return code_str
