@@ -56,6 +56,8 @@ print("CSV file 'schema_info.csv' has been created successfully.")
 #################################################################### DATAFRAMES IN SEPERATE PY FILES ##############################################################################################
 
 
+
+
 import os
 import json
 import pandas as pd
@@ -64,40 +66,67 @@ import pandas as pd
 def load_json_file(file_path):
     with open(file_path, 'r') as f:
         return json.load(f)
+
+# Common PySpark code to be written to each generated file
 common_code = f"""
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, explode, regexp_replace, date_format, concat_ws
+from pyspark.sql.types import StructType, ArrayType
+from pyspark.sql.functions import col, explode, regexp_replace, date_format
 
 spark = SparkSession.builder \\
-    .appName("Explode Nested Arrays") \\
-    .config("spark.executor.memory","16g") \\
-    .config("spark.driver.memory","16g") \\
+    .appName("Expand Struct Fields") \\
+    .config("spark.executor.memory", "16g") \\
+    .config("spark.driver.memory", "16g") \\
     .getOrCreate()
 
 spark.conf.set("spark.sql.repl.eagerEval.enabled", True)
 spark.conf.set("spark.sql.caseSensitive", True)
-
 json_path ="insuranceData_20240909000000.json"
 df = spark.read.json(json_path)
 
-def transform_timestamp(dfdate, column_name):
-    dfdate = dfdate.withColumn(column_name, regexp_replace(f"{{column_name}}.$date", "T", " "))
-    dfdate = dfdate.withColumn(column_name, regexp_replace(column_name, "Z", ""))
-    dfdate = dfdate.withColumn(column_name, date_format(col(column_name), "yyyy-MM-dd HH:mm:ss"))
-    return dfdate
+# Function to drop child arrays
+def drop_child_arrays(df):
+    def find_array_columns(schema, prefix=''):
+        array_columns = []
+        for field in schema.fields:
+            field_name = f"{{prefix}}.{{field.name}}" if prefix else field.name
+            if isinstance(field.dataType, ArrayType):
+                array_columns.append(field_name)
+            elif isinstance(field.dataType, StructType):
+                array_columns += find_array_columns(field.dataType, field_name)
+        return array_columns
+    
+    array_columns = find_array_columns(df.schema)
+    df_no_arrays = df.drop(*array_columns)
+    
+    return df_no_arrays
 
-def transform_timestamp_dataeTime(dfdate, column_name):
-    dfdate = dfdate.withColumn(column_name, regexp_replace(f"{{column_name}}.dateTime", "T", " "))
-    dfdate = dfdate.withColumn(column_name, regexp_replace(column_name, "Z", ""))
-    dfdate = dfdate.withColumn(column_name, date_format(col(column_name), "yyyy-MM-dd HH:mm:ss"))
-    return dfdate
+# Recursive function to expand nested structs
+def expand_structs(df):
+    from pyspark.sql.types import StructType
 
-def transform_timestamp_splt(dfdate, column_name):
-    dfdate = dfdate.withColumn(column_name, regexp_replace(f"{{column_name}}", "T", " "))
-    dfdate = dfdate.withColumn(column_name, regexp_replace(column_name, "Z", ""))
-    dfdate = dfdate.withColumn(column_name, date_format(col(column_name), "yyyy-MM-dd HH:mm:ss"))
-    return dfdate
+    def find_struct_columns(schema, prefix=''):
+        struct_columns = []
+        for field in schema.fields:
+            field_name = f'{{prefix}}.{{field.name}}' if prefix else field.name
+            if isinstance(field.dataType, StructType):
+                struct_columns.append(field_name)
+                struct_columns += find_struct_columns(field.dataType, field_name)
+        return struct_columns
+
+    struct_columns = find_struct_columns(df.schema)
+
+    # Expand all struct columns at once
+    if struct_columns:
+        expanded_columns = [f'{{col}}.*' for col in struct_columns]
+        df = df.select(*expanded_columns, '*')
+        
+        # Drop the struct columns after expanding
+        df = df.drop(*struct_columns)
+    
+    return df
 """
+
 # Recursive function to detect arrays of structs in the JSON and store their hierarchy
 def find_struct_arrays(data, parent_key=''):
     arrays = {}
@@ -141,7 +170,6 @@ def filter_rows_by_exact_hierarchy(df, hierarchy):
 def generate_pyspark_code(fields, df_name):
     current_alias = fields.iloc[0]['Field'].split('.')[0]  # Start from the base field
     level_stack = [current_alias]  # To keep track of hierarchy levels
-    columns_to_drop = []  # Keep track of columns to drop
 
     # PySpark code block as string
     code_str = f'df_{df_name} = df\n'
@@ -160,8 +188,6 @@ def generate_pyspark_code(fields, df_name):
             alias_name = f"new_{last_level}"
             code_str += f'df_{df_name} = df_{df_name}.select(explode("{last_level}").alias("{alias_name}"))\n'
             code_str += f'df_{df_name} = df_{df_name}.select("{alias_name}.*")\n'
-            columns_to_drop.append(last_level)
-            columns_to_drop.append(alias_name)
             current_alias = alias_name
             level_stack.append(last_level)
 
@@ -173,15 +199,16 @@ def generate_pyspark_code(fields, df_name):
                 code_str += f'df_{df_name} = df_{df_name}.select("{last_level}.*")\n'
                 current_alias = last_level
             level_stack.append(last_level)
-            columns_to_drop.append(last_level)
 
     # Drop the exploded columns and aliases in a single line
-    code_str += f'df_{df_name} = df_{df_name}.drop(*{columns_to_drop})\n'
+    code_str += f'df_{df_name} = drop_child_arrays(df_{df_name})\n'
+    
+    # Call expand_structs to dynamically expand any struct fields present
+    code_str += f'df_{df_name} = expand_structs(df_{df_name})\n'
     code_str += f'df_{df_name}.printSchema()\n'
     code_str += f'df_{df_name}.show()'
     return code_str
 
-# Function to create Python files for each array of structs found
 # Function to create Python files for each array of structs found
 def create_python_files(arrays, schema_file_path):
     df_csv = pd.read_csv(schema_file_path)  # Read schema CSV into a DataFrame
@@ -229,7 +256,6 @@ def process_json(file_path, schema_file_path):
 json_file_path = 'insuranceData_20240909000000.json'
 schema_file_path = 'schema_info.csv'
 process_json(json_file_path, schema_file_path)
-
 
 
 ###########################################################################################################
