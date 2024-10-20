@@ -1,0 +1,85 @@
+
+import json
+from pyspark.sql import functions as F
+from pprint import pprint
+
+# Function to classify columns based on their content and count occurrences of different types
+def classify_columns_and_count_frequencies(df, df_name):
+    # Initialize a dictionary to hold schema, column names, and classification
+    result = {
+        'DataFrame_name': df_name,
+        'schema': df.schema.jsonValue(),  # Get the schema in JSON format
+        'column_names': df.columns,
+        'integer_columns': [],
+        'decimal_columns': [],
+        'string_columns': [],
+        'mixed_columns': [],
+        'null_columns': [],
+        'column_frequencies': {}
+    }
+
+    # Get the total number of rows in the DataFrame
+    total_count = df.count()
+
+    for col_name in df.columns:
+        # Initialize frequency counts
+        null_count = df.filter(F.col(col_name).isNull()).count()
+        empty_count = df.filter(F.col(col_name) == "").count()  # Count empty strings
+        string_count = df.filter(F.col(col_name).isNotNull() & (F.col(col_name) != "")).count()
+        integer_count = df.filter(F.col(col_name).rlike('^[0-9]+$')).count()
+        decimal_count = df.filter(F.col(col_name).rlike('^[0-9]+(\\.[0-9]+)?$')).count()
+
+        # Store the frequency counts for the current column
+        result['column_frequencies'][col_name] = {
+            'null_count': null_count,
+            'empty_count': empty_count,
+            'integer_count': integer_count,
+            'decimal_count': decimal_count,
+            'string_count': string_count,
+        }
+
+        # Classify the column based on the counts
+        if null_count == total_count or empty_count == total_count or null_count + empty_count == total_count:
+            result['null_columns'].append(col_name)
+        elif integer_count == total_count or integer_count + null_count == total_count or integer_count + empty_count == total_count or integer_count + null_count + empty_count == total_count:
+            result['integer_columns'].append(col_name)
+        elif decimal_count == total_count or decimal_count + null_count == total_count or decimal_count + empty_count == total_count or decimal_count + null_count + empty_count == total_count:
+            result['decimal_columns'].append(col_name)
+        elif string_count == total_count or string_count + null_count == total_count or string_count + empty_count == total_count or string_count + null_count + empty_count == total_count:
+            result['string_columns'].append(col_name)
+        else:
+            mixed_count = df.filter(
+                (F.col(col_name).rlike('^[0-9]+$')) |
+                (F.col(col_name).rlike('^[0-9]+(\\.[0-9]+)?$')) |
+                (F.col(col_name).isNotNull())
+            ).count()
+
+            if mixed_count != total_count:
+                result['mixed_columns'].append(col_name)
+
+    return result
+
+# Function to handle multiple DataFrames
+def analyze_multiple_dataframes(dataframes):
+    output_log = []
+
+    for df_name, df in dataframes.items():
+        result = classify_columns_and_count_frequencies(df, df_name)
+        output_log.append(result)
+
+    # Convert the results to a beautified JSON format
+    output_json = json.dumps(output_log, indent=4)
+    print(output_json)
+
+    # Optionally save to a file
+    with open("dataframes_analysis_log.json", "w") as json_file:
+        json.dump(output_log, json_file, indent=4)
+
+# Example usage with multiple DataFrames
+dataframes = {
+    'df_applicantList_phone': df_applicantList_phone,  # Replace with your actual DataFrame variables
+    # 'df_other_example': df_other_example  # You can add more DataFrames as needed
+}
+
+# Analyze the DataFrames and print the result
+analyze_multiple_dataframes(dataframes)
